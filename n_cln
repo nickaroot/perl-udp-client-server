@@ -1,0 +1,223 @@
+#!/usr/bin/perl
+
+use utf8;
+use open qw(:std :utf8);
+use sigtrap;
+use Socket;
+
+$crd = "$$-$ENV{$USER}";
+
+$ip = "127.0.0.1";
+
+die "Error: Port argument is invalid (1000 < port < 65535)"
+if ! $ARGV[0] or $ARGV[0] < 1001 or $ARGV[0] > 65535;
+
+$port = shift;
+
+$srvnaddr = inet_aton( $ip ) or die "\nError: Unable to convert $ip to IP-address: $1\n";
+$paddr = sockaddr_in( $port, $srvnaddr );
+
+main();
+
+sub main {
+
+    socket( ClntSock, PF_INET, SOCK_DGRAM, getprotobyname('udp') );
+
+    print "
+1. List all rows
+2. Filter by Year
+3. Insert row
+4. Remove row
+5. Shutdown
+0. Exit
+
+Enter command: ";
+
+    $std = <>;
+
+    if ($std == 0) {
+
+        exit;
+
+    } elsif ($std == 1) {
+
+        s_list();
+
+    } elsif ($std == 2) {
+        
+        s_filter();
+
+    } elsif ($std == 3) {
+        
+        s_insert();
+
+    } elsif ($std == 4) {
+        
+        s_remove();
+
+    } elsif ($std == 5) {
+        
+        s_shutdown();
+
+    } else {
+        
+        print "\nWrong command\n";
+
+        main();
+
+    }
+
+} # sub main
+
+sub s_list {
+
+    $dgr = $crd . " --> " . "$ip:$port" . " <$nn> ::\n" . "list";
+
+    send( ClntSock, $dgr, 0, $paddr );
+
+    recv( ClntSock, $rep, 4096, 0 );
+
+    print $rep;
+
+    main();
+
+} # sub s_list
+
+sub s_filter {
+
+    if ( ! $year ) {
+
+        print "
+1. Greater than
+2. Lower than
+0. Main Menu
+";
+
+        print "Enter command: ";
+        $filter_std = <>;
+        chomp $filter_std;
+
+        if ( $filter_std == 1 ) {
+        
+            print "Greater than Year: ";
+            $year = <>;
+            chomp $year;
+
+        } elsif ( $filter_std == 2 ) {
+        
+            print "Lower than Year: ";
+            $year = <>;
+            chomp $year;
+        
+        } elsif ( $filter_std == 0 ) {
+
+            $year = "";
+            main();
+            
+
+        }
+
+        s_filter();
+
+    } else {
+
+
+
+        $dgr = $crd . " --> " . "$ip:$port" . " <$nn> ::\n" . "filter:$filter_std:$year";
+
+        send( ClntSock, $dgr, 0, $paddr );
+
+        recv( ClntSock, $rep, 4096, 0 );
+
+        print $rep;
+
+        $year = "";
+
+        main();
+
+    }
+
+} # sub s_filter
+
+sub s_insert {
+
+    printf( "%-15s%-8s%-15s\n", "name", "year", "city" );
+    
+    $name = <>;
+    chomp $name;
+    printf( "%-15s", "" );
+
+    $year = <>;
+    chomp $year;
+    printf( "%-15s%-8s", "", "" );
+
+    $city = <>;
+    chomp $city;
+
+    print "
+Are you want to add row? (y/n)
+";
+
+    $confirm = <>;
+    
+    if ( $confirm =~ /y/i ) {
+    
+        $dgr = $crd . " --> " . "$ip:$port" . " <$nn> ::\n" . "insert:$name:$year:$city";
+
+        $name = "";
+        $year = "";
+        $city = "";
+
+        send( ClntSock, $dgr, 0, $paddr );
+
+        recv( ClntSock, $rep, 4096, 0 );
+
+        print $rep;
+    
+        main();
+
+    } elsif ( $confirm =~ /n/i ) {
+    
+        main();
+    
+    } else {
+    
+        print "\nError: Invalid command\n";
+    
+        main();
+
+    }
+
+} # sub s_insert
+
+sub s_remove {
+
+    print "Enter ID: ";
+    $remove_id = <>;
+    chomp $remove_id;
+
+    $dgr = $crd . " --> " . "$ip:$port" . " <$nn> ::\n" . "remove:$remove_id";
+
+    send( ClntSock, $dgr, 0, $paddr );
+
+    recv( ClntSock, $rep, 4096, 0 );
+
+    print $rep;
+
+    main();
+
+} # sub s_remove
+
+sub s_shutdown {
+
+    $dgr = $crd . " --> " . "$ip:$port" . " <$nn> ::\n" . "shutdown" ;
+
+    send( ClntSock, $dgr, 0, $paddr );
+
+    $rpaddr = recv( ClntSock, $rep, 4096, 0 );
+
+    print "\nServer respond with: $rep\n";
+
+    main();
+
+} # sub s_shutdown

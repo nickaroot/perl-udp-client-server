@@ -1,0 +1,269 @@
+#!/usr/bin/perl
+
+use utf8;
+use open qw(:std :utf8);
+use sigtrap;
+use Socket;
+
+$NAME_FILE_DB = "DB.txt";
+
+sub daemonize {
+
+    defined(my $pid=fork) or die "Error: Can't fork process: $!";
+    exit if $pid;
+
+    use POSIX qw(setsid);
+    setsid; # daemonize magic
+
+    umask 0; # 0666 Files, 0777 Directories
+
+} # sub daemonize
+
+sub s_shutdown {
+
+    print LOG "$$, $lt: Shutdown sent from $ipac:$pc\n";
+
+    $reply = "\nServer was terminated $$-$ENV{USER} :$ServPort\n";
+    send( ServSock, $reply, 0, $ClnAddr );
+
+    close( ServSock );
+    die $reply;
+
+}
+
+sub s_list {
+
+    open( FILE, $NAME_FILE_DB ) or die "\nError: Can't open file $!\n";
+
+    $reply = sprintf( "\n%-4s%-15s%-8s%-15s\n", "id", "name", "year", "city" );
+
+    while ( $row = <FILE> ) {
+
+        $row =~ /^(.+):(.+):(.+):(.+)$/i;
+
+        $reply .= sprintf( "%-4s%-15s%-8s%-15s\n", $1, $2, $3, $4 );
+
+    }
+
+    close( FILE );
+
+    print LOG "$$, $lt: List requested from $ipac:$pc\n";
+
+    return $reply;
+
+} # sub s_list
+
+sub s_filter {
+
+    $data = $_;
+
+    $data =~ /^filter (\d) (\d\d\d\d)$/i;
+
+    $filter_std = $1;
+    $year = $2;
+
+    open( FILE, $NAME_FILE_DB ) or die "Error: Can't open file $!";
+
+    $reply = sprintf( "%-4s%-15s%-8s%-15s\n", "id", "name", "year", "city" );
+
+    while ( $row = <FILE> ) {
+
+        $row =~ /^(.+):(.+):(.+):(.+)$/i;
+
+        if ( ( $filter_std == 1 && $3 > $year ) || ( $filter_std == 2 && $3 < $year )  ) {
+
+            $reply .= sprintf( "%-4s%-15s%-8s%-15s\n", $1, $2, $3, $4 );
+
+        }
+
+    }
+
+    close( FILE );
+
+    return $reply;
+
+}
+
+sub s_insert {
+
+    $data = $_;
+
+    $data =~ /insert:(.+):(.+):(.+)/i;
+
+    $name = $1;
+    $year = $2;
+    $city = $3;
+
+    my $new_id;
+
+    {
+
+        local $_;
+
+        open( FILE, $NAME_FILE_DB ) or die "Error: Can't open file $!";
+
+        $last = $_ while <FILE>;
+
+        $last =~ /^(.+):(.+):(.+):(.+)$/i;
+        $new_id = $1 + 1;
+
+        close ( FILE );
+    
+    }
+
+    open( FILE, ">> $NAME_FILE_DB" ) or die "Error: Can't open file $!";
+    
+    print FILE "\n$new_id:$name:$year:$city";
+
+    close( FILE );
+
+    $reply = s_list();
+
+    return $reply;
+
+}
+
+sub s_remove {
+
+    $data = $_;
+
+    $data =~ /remove:(\d+)/i;
+
+    $remove_id = $1;
+
+    open( FILE, "< $NAME_FILE_DB" ) or die "Error: Can't open file $!";
+
+    @lines = <FILE>;
+
+    close( FILE );
+    
+    open( FILE, "> $NAME_FILE_DB" ) or die "Error: Can't open file $!";
+
+    $i = 0;
+
+    foreach my $line ( @lines ) {
+    
+        if ( $line  =~ m/(.+):(.+):(.+):(.+)/ ) {
+
+            chomp( $id = $1 );
+            chomp( $name = $2 );
+            chomp( $year = $3 );
+            chomp( $city = $4 );
+
+            $new_line = "";
+            $new_line .= "\n" unless ( $i == 0 );
+            $new_line .= "$id:$name:$year:$city";
+
+            print FILE $new_line unless ( $id == $remove_id );
+
+        }
+
+        ++$i;
+
+    }
+
+    $reply = s_list();
+
+    close( FILE );
+
+    return $reply;
+
+}
+
+die "Error: Port argument is invalid (1000 < port < 65535)"
+if ! $ARGV[0] or $ARGV[0] < 1001 or $ARGV[0] > 65535;
+
+$ServPort = shift;
+
+socket( ServSock, PF_INET, SOCK_DGRAM, getprotobyname('udp') );
+
+print "
+Server started with pid=$$
+
+Get daemon info:
+ps -axo tt,user,pid,pgid,start,ppid,stat,command | egrep -i 'perl'
+";
+
+daemonize();
+
+setsockopt( ServSock, SOL_SOCKET, SO_REUSEADDR, 1 );
+
+$ServAddr = sockaddr_in( $ServPort, INADDR_ANY );
+bind( ServSock, $ServAddr ) or die "Error: Unable to use port $!\n";
+
+$ServUser = $ENV{"USER"};
+$ServPid = $$;
+
+open( LOG, ">>$ENV{HOME}/LOG/servupdlog" ) or die "Error: Unable to open logfile ~/LOG/servupdlog: $!\n";
+
+select( (select(LOG), $|=1)[0] );
+
+$lt = localtime;
+print LOG "
+$lt: Server is running. $0
+
+    Pid: $ServPid
+    User: $ServUser
+    Port: $ServPort
+";
+
+NEXTDGRAM: while ( $ClnAddr = recv( ServSock, $buf, 4096, 0 ) ) {
+
+    $lt = localtime;
+
+    ($pc, $ac) = unpack_sockaddr_in( $ClnAddr );
+
+    $ipac = inet_ntoa( $ac ); # IP
+
+    print LOG "
+$$, $lt: New request from $ipac:$pc:
+$buf
+";
+
+    defined( $hostname = gethostbyaddr( $ac, AF_INET ) ) and
+        print LOG "Hostname: $hostname\n";
+    # Trying to resolve Hostname
+
+    $buf =~ /^(.+)::\n(.+)$/;
+    $head = $1;
+    $data = $2;
+
+    $head =~ /^(.+) --> (.+) <(\d+)>$/;
+    $clncrd = $1;
+    $srvap = $2;
+    $nn = $3;
+
+    if ( $data =~ /shutdown/i ) {
+
+        s_shutdown();
+
+    } elsif ( $data =~ /^list/i ) {
+
+        $reply = s_list();
+
+    } elsif ( $data =~ /^filter:(\d):(\d\d\d\d)/i ) {
+
+        $reply = s_filter( $data );
+
+    } elsif ( $data =~ /^insert:(.+):(.+):(.+)/i ) {
+
+        $reply = s_insert( $data );
+
+    } elsif ( $data =~ /^remove:(\d+)/i ) {
+
+        $reply = s_remove( $data );
+
+    } else {
+
+        $reply = "Error: Unknown command $data";
+
+    }
+
+    print LOG "
+$$. $lt: REPLY ON $srvap <$nn> TO $clncrd:
+$reply
+";
+
+    send( ServSock, $reply, 0, $ClnAddr );
+
+}
